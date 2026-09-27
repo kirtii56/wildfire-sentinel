@@ -1,12 +1,38 @@
 # Wildfire Sentinel 2.0
 
-Ingests real NASA FIRMS active-fire observations into PostgreSQL.
+Ingests NASA FIRMS satellite fire detections into PostgreSQL, groups them into
+fire events with DBSCAN, and serves them through a FastAPI REST API. The whole
+stack runs with Docker Compose.
 
-**Status: in development — ingestion, database and fire-event clustering complete.**
-There is no API, dashboard, Docker setup or CI in the repository yet. Nothing
-here is production-hardened and it is not described as such.
+**Status: in development.** Ingestion, database, fire-event clustering, REST API
+and Docker are complete. A web dashboard and hosting are next. Nothing here is
+production-hardened and it is not described as such.
 
-## Quick start (no database, about 5 minutes)
+## Run with Docker (recommended)
+
+Needs Docker Desktop and a free NASA FIRMS MAP_KEY.
+
+```bash
+cp .env.example .env               # put your key after NASA_FIRMS_MAP_KEY=
+docker compose up -d --build       # starts PostgreSQL + the API
+docker compose run --rm ingest     # fetches the last day of world fire data
+```
+
+Then open **http://localhost:8000/docs** to try every endpoint in the browser.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /health` | API and database status |
+| `GET /fires?days=1` | Detections grouped into fire events, largest total FRP first |
+| `GET /fires/top?n=10` | The n biggest fire events |
+| `GET /detections?days=1&bbox=...` | Raw satellite detections, newest first |
+| `GET /stats/daily?days=7` | Detections and total FRP per day and satellite (SQL aggregate) |
+| `GET /ingest-runs` | Recent ingest runs, to check data freshness |
+
+`bbox` is `lon_min,lat_min,lon_max,lat_max`. Stop with `docker compose down`
+(`-v` also deletes the stored data).
+
+## Quick map without a database
 
 ```bash
 pip install -r requirements.txt
@@ -15,7 +41,6 @@ python scripts/quick_map.py   # whole world, last 24 hours
 ```
 
 Open `output/fire_map.html` in a browser. `output/fire_events.csv` has one row per fire event.
-The full pipeline with PostgreSQL is described under Setup below.
 
 ## What exists today
 
@@ -26,7 +51,9 @@ The full pipeline with PostgreSQL is described under Setup below.
 - `app/analysis/clustering.py` — groups detections into fire events (DBSCAN, scikit-learn).
 - `scripts/cluster_fires.py` — prints the largest fire events from stored data.
 - `scripts/quick_map.py` — fetches live NASA data and draws a world fire map (no database).
-- `tests/` — 58 tests. No test contacts NASA or writes to a production database.
+- `app/api/` — FastAPI app and pydantic response models.
+- `Dockerfile`, `docker-compose.yml` — PostgreSQL + API containers and a one-off ingest job.
+- `tests/` — 75 tests. No test contacts NASA or writes to a production database.
 
 ## Data source and semantics
 
@@ -71,19 +98,20 @@ FIRMS gives one row per hot pixel per satellite pass, so row counts over-count f
 
 Both defaults are tunable assumptions. Events are estimates, not official fire perimeters;
 `pixel_footprint_km2` is summed pixel area, not burned area. A world-scale day
-(~60k synthetic detections) clusters in under a second.
+(~75k synthetic detections) is loaded, clustered and returned by `/fires` in about 2 seconds.
 
 ```bash
 python scripts/cluster_fires.py --days 1 --csv events.csv
 ```
 
-## Setup
+## Setup without Docker
 
 ```bash
 cp .env.example .env       # then fill in DATABASE_URL, NASA_FIRMS_MAP_KEY, FIRMS_AREA
-pip install -e ".[dev]"
+pip install -r requirements-dev.txt
 python scripts/migrate.py
 python scripts/run_ingest.py --area <bbox-or-world> --day-range 1 --json
+uvicorn app.api.main:app --reload     # API on http://localhost:8000
 ```
 
 `FIRMS_AREA` has no default. A world VIIRS query returns tens of thousands of
@@ -105,4 +133,6 @@ fixtures live only under `tests/fixtures/` and are labelled there.
   covered by mocked HTTP tests only.
 - MODIS is not supported yet. The schema accommodates it; the product registry
   does not list it.
-- No API, dashboard, Docker or CI yet (Phases 5–10).
+- No web dashboard, hosting or CI yet.
+- `/fires` clusters on every request. Fine for a few days of world data; a longer
+  history would need events precomputed and stored.

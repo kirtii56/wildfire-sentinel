@@ -1,0 +1,51 @@
+# Start the database and the API:   docker compose up -d --build
+# Fetch NASA data into the database: docker compose run --rm ingest
+# API docs:                          http://localhost:8000/docs
+# Stop everything:                   docker compose down   (add -v to also delete the data)
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wildfire
+      POSTGRES_PASSWORD: wildfire
+      POSTGRES_DB: wildfire
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wildfire -d wildfire"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://wildfire:wildfire@db:5432/wildfire
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-off job, not started by `up`. Needs NASA_FIRMS_MAP_KEY in .env.
+  ingest:
+    build: .
+    profiles: ["jobs"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://wildfire:wildfire@db:5432/wildfire
+    command: >
+      sh -c "python scripts/migrate.py &&
+             python scripts/run_ingest.py --area $${FIRMS_AREA:-world} --day-range $${FIRMS_DAY_RANGE:-1}"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

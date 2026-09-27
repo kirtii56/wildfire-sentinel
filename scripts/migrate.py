@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import sys
 from pathlib import Path
 
@@ -71,7 +72,8 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="List pending migrations only.")
     args = parser.parse_args()
 
-    database_url = args.database_url
+    # DATABASE_URL from the environment is enough; the NASA key is not needed here.
+    database_url = args.database_url or os.getenv("DATABASE_URL")
     if not database_url:
         from app.core.config import get_settings
 
