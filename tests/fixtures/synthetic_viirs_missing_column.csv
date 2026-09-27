@@ -1,0 +1,2 @@
+latitude,longitude,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,frp,daynight
+-12.345000,-67.890000,0.42,0.36,2026-06-12,1345,N20,VIIRS,nominal,2.0NRT,15.20,D
