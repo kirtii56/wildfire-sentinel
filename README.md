@@ -18,7 +18,7 @@ docker compose up -d --build       # starts PostgreSQL + the API
 docker compose run --rm ingest     # fetches the last day of world fire data
 ```
 
-Then open **http://localhost:8000/docs** to try every endpoint in the browser.
+
 
 | Endpoint | Returns |
 |---|---|
