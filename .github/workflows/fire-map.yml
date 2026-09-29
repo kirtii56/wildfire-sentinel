@@ -1,0 +1,56 @@
+# Rebuilds the world fire map from live NASA FIRMS data once a day
+# and publishes it with GitHub Pages.
+name: Daily fire map
+
+on:
+  schedule:
+    - cron: "30 2 * * *"   # every day at 02:30 UTC (08:00 IST)
+  workflow_dispatch:        # also allows a manual run from the Actions tab
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch NASA data and draw the map
+        env:
+          NASA_FIRMS_MAP_KEY: ${{ secrets.NASA_FIRMS_MAP_KEY }}
+        run: python scripts/quick_map.py
+
+      - name: Prepare the website
+        run: |
+          mkdir site
+          cp output/fire_map.html site/index.html
+          cp output/fire_events.csv site/fire_events.csv
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

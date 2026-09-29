@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -80,7 +81,10 @@ def draw_map(events: pd.DataFrame, path: Path) -> None:
         },
         labels={"max_frp_mw": "Max FRP (MW)", "n_detections": "Pixels"},
         projection="natural earth",
-        title=f"Wildfire Sentinel: {len(events):,} fire events (NASA FIRMS VIIRS)",
+        title=(
+            f"Wildfire Sentinel: {len(events):,} fire events (NASA FIRMS VIIRS), "
+            f"updated {datetime.now(UTC):%Y-%m-%d %H:%M} UTC"
+        ),
         size_max=18,
     )
     fig.update_geos(showcountries=True, countrycolor="#999", landcolor="#f2efe9")

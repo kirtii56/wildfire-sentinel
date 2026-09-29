@@ -28,6 +28,12 @@ NASA FIRMS API ──> fetch ──> parse CSV ──> validate ──> PostgreS
 4. **Cluster** — `app/analysis/clustering.py` groups nearby pixels into fire events.
 5. **Serve** — `app/api/main.py` exposes the data as JSON endpoints.
 
+## Live map
+
+A GitHub Actions workflow (`.github/workflows/fire-map.yml`) runs `quick_map.py`
+every day on GitHub's servers and publishes the result with GitHub Pages.
+It needs the NASA key stored as a repository secret named `NASA_FIRMS_MAP_KEY`.
+
 ## Quick start: world fire map (no database)
 
 Needs Python 3.11+ and a free NASA FIRMS MAP_KEY
@@ -144,6 +150,6 @@ fixtures live only under `tests/fixtures/` and are labelled there.
   covered by mocked HTTP tests only.
 - MODIS is not supported yet. The schema accommodates it; the product registry
   does not list it.
-- No hosting or CI yet.
+- The live map is a static page rebuilt once a day; the API itself is not hosted yet.
 - `/fires` clusters on every request. Fine for a few days of world data; a longer
   history would need events precomputed and stored.
