@@ -1,4 +1,4 @@
-# Runtime dependencies (installed in the Docker image)
+# Runtime dependencies
 fastapi>=0.110
 uvicorn[standard]>=0.29
 httpx>=0.27

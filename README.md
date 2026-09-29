@@ -1,24 +1,59 @@
-# Wildfire Sentinel 2.0
+# Wildfire Sentinel
 
-Ingests NASA FIRMS satellite fire detections into PostgreSQL, groups them into
-fire events with DBSCAN, and serves them through a FastAPI REST API. The whole
-stack runs with Docker Compose.
+Pulls live NASA FIRMS satellite fire detections for the whole world, cleans and
+validates them, and stores them in PostgreSQL. A FastAPI REST API serves the
+detections and groups hot pixels into fire events with DBSCAN (scikit-learn)
+on each request.
 
-**Status: in development.** Ingestion, database, fire-event clustering, REST API
-and Docker are complete. A web dashboard and hosting are next. Nothing here is
-production-hardened and it is not described as such.
+**Stack:** Python · Pandas · NumPy · scikit-learn · PostgreSQL · FastAPI · Plotly · pytest
 
-## Run with Docker (recommended)
+**Status: in development.** Ingestion, validation, database, fire-event
+clustering, REST API and a world fire map are working. Hosting is next.
 
-Needs Docker Desktop and a free NASA FIRMS MAP_KEY.
+## How it works
 
-```bash
-cp .env.example .env               # put your key after NASA_FIRMS_MAP_KEY=
-docker compose up -d --build       # starts PostgreSQL + the API
-docker compose run --rm ingest     # fetches the last day of world fire data
+```
+NASA FIRMS API ──> fetch ──> parse CSV ──> validate ──> PostgreSQL
+                                                          │
+                          fire map (Plotly) <── cluster into events (DBSCAN)
+                                                          │
+                                                   FastAPI REST API
 ```
 
+1. **Fetch** — `app/ingestion/firms_client.py` downloads VIIRS fire detections as CSV.
+2. **Parse + validate** — `parser.py` and `validation.py` turn rows into typed records.
+   Bad rows are rejected with a reason, never silently fixed.
+3. **Store** — `app/database/loader.py` inserts in batches; re-running the same day
+   does not create duplicates.
+4. **Cluster** — `app/analysis/clustering.py` groups nearby pixels into fire events.
+5. **Serve** — `app/api/main.py` exposes the data as JSON endpoints.
 
+## Quick start: world fire map (no database)
+
+Needs Python 3.11+ and a free NASA FIRMS MAP_KEY
+(https://firms.modaps.eosdis.nasa.gov/api/area/).
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env          # put your key after NASA_FIRMS_MAP_KEY=
+python scripts/quick_map.py   # whole world, last 24 hours
+```
+
+Open `output/fire_map.html` in a browser. `output/fire_events.csv` has one row per fire event.
+
+## Full pipeline: database + API
+
+Needs a PostgreSQL database — either installed locally or a free cloud one
+(Supabase or Neon). Put its connection string in `.env` as `DATABASE_URL`.
+
+```bash
+pip install -r requirements-dev.txt
+python scripts/migrate.py                                   # create the tables
+python scripts/run_ingest.py --area world --day-range 1     # load NASA data
+uvicorn app.api.main:app --reload                           # API on http://localhost:8000
+```
+
+Interactive API docs: http://localhost:8000/docs
 
 | Endpoint | Returns |
 |---|---|
@@ -29,31 +64,20 @@ docker compose run --rm ingest     # fetches the last day of world fire data
 | `GET /stats/daily?days=7` | Detections and total FRP per day and satellite (SQL aggregate) |
 | `GET /ingest-runs` | Recent ingest runs, to check data freshness |
 
-`bbox` is `lon_min,lat_min,lon_max,lat_max`. Stop with `docker compose down`
-(`-v` also deletes the stored data).
+`bbox` is `lon_min,lat_min,lon_max,lat_max`.
 
-## Quick map without a database
+A world VIIRS query returns tens of thousands of rows per day and uses part of
+the FIRMS daily quota, so start with a small bounding box while testing.
 
-```bash
-pip install -r requirements.txt
-cp .env.example .env          # then put your key after NASA_FIRMS_MAP_KEY=
-python scripts/quick_map.py   # whole world, last 24 hours
-```
+## Project layout
 
-Open `output/fire_map.html` in a browser. `output/fire_events.csv` has one row per fire event.
-
-## What exists today
-
-- `migrations/001_init.sql` — the v2 schema, applied by `scripts/migrate.py`.
+- `migrations/001_init.sql` — database schema, applied by `scripts/migrate.py`.
 - `app/ingestion/` — FIRMS client, CSV parser, validator, pipeline.
 - `app/database/` — batched loader and connection helper.
-- `scripts/run_ingest.py` — the only production ingestion entry point.
-- `app/analysis/clustering.py` — groups detections into fire events (DBSCAN, scikit-learn).
-- `scripts/cluster_fires.py` — prints the largest fire events from stored data.
-- `scripts/quick_map.py` — fetches live NASA data and draws a world fire map (no database).
+- `app/analysis/` — SQL queries and fire-event clustering.
 - `app/api/` — FastAPI app and pydantic response models.
-- `Dockerfile`, `docker-compose.yml` — PostgreSQL + API containers and a one-off ingest job.
-- `tests/` — 75 tests. No test contacts NASA or writes to a production database.
+- `scripts/` — command-line entry points (ingest, migrate, cluster, quick map).
+- `tests/` — 75 tests (unit + database). No test contacts NASA.
 
 ## Data source and semantics
 
@@ -104,24 +128,11 @@ Both defaults are tunable assumptions. Events are estimates, not official fire p
 python scripts/cluster_fires.py --days 1 --csv events.csv
 ```
 
-## Setup without Docker
-
-```bash
-cp .env.example .env       # then fill in DATABASE_URL, NASA_FIRMS_MAP_KEY, FIRMS_AREA
-pip install -r requirements-dev.txt
-python scripts/migrate.py
-python scripts/run_ingest.py --area <bbox-or-world> --day-range 1 --json
-uvicorn app.api.main:app --reload     # API on http://localhost:8000
-```
-
-`FIRMS_AREA` has no default. A world VIIRS query returns tens of thousands of
-rows per day and consumes a meaningful share of the FIRMS transaction quota.
-
 ## Tests
 
 ```bash
 python -m pytest                                  # unit tests only
-TEST_DATABASE_URL=postgresql://... python -m pytest   # includes database tests
+TEST_DATABASE_URL=postgresql://... python -m pytest   # all 75, needs a test database
 ```
 
 Database tests skip cleanly when `TEST_DATABASE_URL` is unset. Synthetic
@@ -133,6 +144,6 @@ fixtures live only under `tests/fixtures/` and are labelled there.
   covered by mocked HTTP tests only.
 - MODIS is not supported yet. The schema accommodates it; the product registry
   does not list it.
-- No web dashboard, hosting or CI yet.
+- No hosting or CI yet.
 - `/fires` clusters on every request. Fine for a few days of world data; a longer
   history would need events precomputed and stored.

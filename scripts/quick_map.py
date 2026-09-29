@@ -1,6 +1,6 @@
 """Quick run: fetch today's world fire data from NASA and draw a map.
 
-No database and no Docker needed. Only needs NASA_FIRMS_MAP_KEY in .env.
+No database needed. Only needs NASA_FIRMS_MAP_KEY in .env.
 
     python scripts/quick_map.py            # last 1 day, whole world
     python scripts/quick_map.py --days 2
