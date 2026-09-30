@@ -786,7 +786,8 @@ st.markdown(
     <div class="ws-note">
     Data: NASA FIRMS, VIIRS on NOAA-20, NOAA-21 and Suomi NPP, refreshed every 3 hours.
     Latest satellite pass in view: {latest_text}.
-    Source code: <a href="https://github.com/kirtii56/wildfire." style="color:{T.ink_2}">GitHub</a>.
+    Source code:
+    <a href="https://github.com/kirtii56/wildfire-sentinel" style="color:{T.ink_2}">GitHub</a>.
     </div>
     """,
     unsafe_allow_html=True,

@@ -7,12 +7,13 @@ on each request.
 
 **Live dashboard:** https://wildfire-sentinel.streamlit.app/
 
-**Daily static map:** https://kirtii56.github.io/wildfire./
+**Daily static map:** https://kirtii56.github.io/wildfire-sentinel/
 
 **Stack:** Python · Pandas · NumPy · scikit-learn · PostgreSQL · FastAPI · Streamlit · Plotly · pytest
 
 **Status: in development.** Ingestion, validation, database, fire-event
-clustering, REST API and a world fire map are working. Hosting is next.
+clustering, REST API, the interactive dashboard (hosted on Streamlit Community Cloud)
+and the daily static map (GitHub Pages) are working.
 
 ## How it works
 
