@@ -7,7 +7,7 @@ on each request.
 
 **Live dashboard:** https://wildfire-sentinel.streamlit.app/
 
-**Daily static map:** https://kirtii56.github.io/wildfire-sentinel/
+**Daily map:** https://kirtii56.github.io/wildfire-sentinel/
 
 **Stack:** Python · Pandas · NumPy · scikit-learn · PostgreSQL · FastAPI · Streamlit · Plotly · pytest
 
