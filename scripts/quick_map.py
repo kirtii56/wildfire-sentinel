@@ -2,7 +2,7 @@
 
 No database needed. Only needs NASA_FIRMS_MAP_KEY in .env.
 
-    python scripts/quick_map.py            # last 1 day, whole world
+    python scripts/quick_map.py            # last 24 hours, whole world
     python scripts/quick_map.py --days 2
 
 Writes two files into ./output/:
@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app.analysis.clustering import cluster_detections, summarize_events  # noqa: E402
+from app.analysis.time_window import firms_day_range, keep_last_days  # noqa: E402
 from app.ingestion.firms_client import FirmsClient  # noqa: E402
 from app.ingestion.parser import parse_csv  # noqa: E402
 from app.ingestion.products import SUPPORTED_PRODUCTS, get_product  # noqa: E402
@@ -49,7 +50,7 @@ def fetch_detections(client: FirmsClient, area: str, days: int) -> pd.DataFrame:
     frames = []
     for product in SUPPORTED_PRODUCTS:
         spec = get_product(product)
-        result = client.fetch(product, area, days)
+        result = client.fetch(product, area, firms_day_range(days))
         outcome = validate_records(parse_csv(result.csv_text, spec), spec)
         accepted, rejected = outcome.counts
         print(f"  {product:<18} {accepted:>7,} rows kept, {rejected:,} rejected")
@@ -61,11 +62,12 @@ def fetch_detections(client: FirmsClient, area: str, days: int) -> pd.DataFrame:
     df["acquired_at"] = pd.to_datetime(
         df["acq_date"].astype(str) + " " + df["acq_time_utc"].astype(str), utc=True
     )
-    return df
+    return keep_last_days(df, days)
 
 
 def draw_map(events: pd.DataFrame, path: Path) -> None:
-    plot = events.copy()
+    # Sort so the most powerful fires are drawn last (on top of the small ones).
+    plot = events.sort_values("max_frp_mw", na_position="first").copy()
     plot["first_seen"] = plot["first_seen"].dt.strftime("%Y-%m-%d %H:%M UTC")
     fig = px.scatter_geo(
         plot,
@@ -73,7 +75,9 @@ def draw_map(events: pd.DataFrame, path: Path) -> None:
         lon="centroid_lon",
         size="n_detections",
         color="max_frp_mw",
-        color_continuous_scale="YlOrRd",
+        color_continuous_scale=["#f4a47a", "#eb6834", "#c94f1f", "#9a3512", "#6b2209"],
+        range_color=(0, max(float(plot["max_frp_mw"].quantile(0.95)), 1.0)),
+        opacity=0.85,
         hover_data={
             "event_id": True, "n_detections": True, "max_frp_mw": ":.1f",
             "total_frp_mw": ":.1f", "first_seen": True, "centroid_lat": ":.3f",
@@ -85,7 +89,7 @@ def draw_map(events: pd.DataFrame, path: Path) -> None:
             f"Wildfire Sentinel: {len(events):,} fire events (NASA FIRMS VIIRS), "
             f"updated {datetime.now(UTC):%Y-%m-%d %H:%M} UTC"
         ),
-        size_max=18,
+        size_max=12,
     )
     fig.update_geos(showcountries=True, countrycolor="#999", landcolor="#f2efe9")
     fig.update_layout(margin={"l": 0, "r": 0, "t": 50, "b": 0})
@@ -94,7 +98,10 @@ def draw_map(events: pd.DataFrame, path: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fetch NASA fire data and draw a world map.")
-    parser.add_argument("--days", type=int, default=1, choices=range(1, 11), metavar="1-10")
+    parser.add_argument(
+        "--days", type=int, default=1, choices=range(1, 10), metavar="1-9",
+        help="rolling window in 24-hour days (default: last 24 hours)",
+    )
     parser.add_argument(
         "--area", default="world", help="'world' or 'lon_min,lat_min,lon_max,lat_max'"
     )

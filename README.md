@@ -7,7 +7,7 @@ on each request.
 
 **Live map (updated daily):** https://kirtii56.github.io/wildfire./
 
-**Stack:** Python · Pandas · NumPy · scikit-learn · PostgreSQL · FastAPI · Plotly · pytest
+**Stack:** Python · Pandas · NumPy · scikit-learn · PostgreSQL · FastAPI · Streamlit · Plotly · pytest
 
 **Status: in development.** Ingestion, validation, database, fire-event
 clustering, REST API and a world fire map are working. Hosting is next.
@@ -29,6 +29,23 @@ NASA FIRMS API ──> fetch ──> parse CSV ──> validate ──> PostgreS
    does not create duplicates.
 4. **Cluster** — `app/analysis/clustering.py` groups nearby pixels into fire events.
 5. **Serve** — `app/api/main.py` exposes the data as JSON endpoints.
+
+## Dashboard (Streamlit)
+
+`streamlit_app.py` is an interactive dashboard over live NASA data: filter by
+region and time window (last 24, 48 or 72 hours), see headline numbers, a world
+map of fire events, a table of the biggest fires (downloadable as CSV) and
+detections over time. It needs only the NASA key, with no database, and caches
+data for 3 hours.
+
+```bash
+pip install -r requirements.txt
+streamlit run streamlit_app.py      # opens http://localhost:8501
+```
+
+NASA counts its time window in UTC calendar days ("day 1" = today so far), so
+the app requests one extra day and keeps exactly the last 24/48/72 hours
+(`app/analysis/time_window.py`).
 
 ## Live map
 
@@ -84,8 +101,9 @@ the FIRMS daily quota, so start with a small bounding box while testing.
 - `app/database/` — batched loader and connection helper.
 - `app/analysis/` — SQL queries and fire-event clustering.
 - `app/api/` — FastAPI app and pydantic response models.
+- `streamlit_app.py` — interactive dashboard (live NASA data, no database).
 - `scripts/` — command-line entry points (ingest, migrate, cluster, quick map).
-- `tests/` — 75 tests (unit + database). No test contacts NASA.
+- `tests/` — 83 tests (unit + database). No test contacts NASA.
 
 ## Data source and semantics
 
@@ -140,7 +158,7 @@ python scripts/cluster_fires.py --days 1 --csv events.csv
 
 ```bash
 python -m pytest                                  # unit tests only
-TEST_DATABASE_URL=postgresql://... python -m pytest   # all 75, needs a test database
+TEST_DATABASE_URL=postgresql://... python -m pytest   # all 83, needs a test database
 ```
 
 Database tests skip cleanly when `TEST_DATABASE_URL` is unset. Synthetic

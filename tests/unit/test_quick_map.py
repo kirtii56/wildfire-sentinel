@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import httpx
 import respx
 
@@ -9,7 +11,9 @@ from scripts import quick_map
 
 
 def test_quick_map_end_to_end(fixtures_dir, monkeypatch, tmp_path):
-    csv_text = (fixtures_dir / "synthetic_viirs_valid.csv").read_text()
+    # Move the fixture to today's UTC date so the rolling 24-hour window keeps it.
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    csv_text = (fixtures_dir / "synthetic_viirs_valid.csv").read_text().replace("2026-06-12", today)
     monkeypatch.setenv("NASA_FIRMS_MAP_KEY", "TESTKEY")
     monkeypatch.setattr(quick_map, "ROOT", tmp_path)
     monkeypatch.setattr("sys.argv", ["quick_map.py"])
