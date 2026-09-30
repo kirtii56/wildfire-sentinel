@@ -37,11 +37,20 @@ NASA FIRMS API ──> fetch ──> parse CSV ──> validate ──> PostgreS
 Live at https://wildfire-sentinel.streamlit.app/ (hosted on Streamlit Community Cloud;
 it may take ~30 seconds to wake up if nobody has visited recently).
 
-`streamlit_app.py` is an interactive dashboard over live NASA data: filter by
-region and time window (last 24, 48 or 72 hours), see headline numbers, a world
-map of fire events, a table of the biggest fires (downloadable as CSV) and
-detections over time. It needs only the NASA key, with no database, and caches
-data for 3 hours.
+An interactive dashboard over live NASA data, built for people who use the data:
+
+- **Flat map or 3D globe** of fire events, coloured by fire power on a log scale.
+- **Click a fire** for a detail card: power, size, duration, first/last seen, coordinates,
+  and links to Google Maps and the NASA FIRMS map.
+- **Select an area** with the map's box or lasso tool to get totals and a download of just
+  those fires.
+- **Near a place:** enter coordinates and a radius (25-500 km) to see the nearest fires.
+- **Trends:** total fire power compared with the previous 24/48/72 hours.
+- **Downloads** as CSV or GeoJSON (for QGIS, ArcGIS, Google Earth), with a column guide.
+- **Shareable links:** region, time window, view and search point are kept in the URL.
+- **Light and dark themes** (follows the visitor's system; switch in ⋮ → Settings).
+
+It needs only the NASA key, with no database, and caches data for 3 hours.
 
 ```bash
 pip install -r requirements.txt
@@ -107,8 +116,9 @@ the FIRMS daily quota, so start with a small bounding box while testing.
 - `app/analysis/` — SQL queries and fire-event clustering.
 - `app/api/` — FastAPI app and pydantic response models.
 - `streamlit_app.py` — interactive dashboard (live NASA data, no database).
+- `app/dashboard/` — dashboard helpers: distances, regions, trends, GeoJSON export, share links.
 - `scripts/` — command-line entry points (ingest, migrate, cluster, quick map).
-- `tests/` — 83 tests (unit + database). No test contacts NASA.
+- `tests/` — 95 tests (unit + database). No test contacts NASA.
 
 ## Data source and semantics
 
@@ -163,7 +173,7 @@ python scripts/cluster_fires.py --days 1 --csv events.csv
 
 ```bash
 python -m pytest                                  # unit tests only
-TEST_DATABASE_URL=postgresql://... python -m pytest   # all 83, needs a test database
+TEST_DATABASE_URL=postgresql://... python -m pytest   # all 95, needs a test database
 ```
 
 Database tests skip cleanly when `TEST_DATABASE_URL` is unset. Synthetic

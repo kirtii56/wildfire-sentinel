@@ -1,0 +1,17 @@
+# Two themes: visitors get their system setting by default and can switch
+# in the app menu (⋮ -> Settings). The charts read the active theme and follow it.
+
+[theme.light]
+primaryColor = "#d95926"
+backgroundColor = "#f9f9f7"
+secondaryBackgroundColor = "#f0efec"
+textColor = "#0b0b0b"
+
+[theme.dark]
+primaryColor = "#eb6834"
+backgroundColor = "#0d0d0d"
+secondaryBackgroundColor = "#1a1a19"
+textColor = "#ffffff"
+
+[client]
+toolbarMode = "viewer"

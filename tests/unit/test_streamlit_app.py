@@ -16,9 +16,7 @@ FIXTURE = ROOT / "tests" / "fixtures" / "synthetic_viirs_valid.csv"
 
 class _FakeResult:
     # Moved to today's UTC date so the rolling time window keeps the rows.
-    csv_text = FIXTURE.read_text().replace(
-        "2026-06-12", datetime.now(UTC).strftime("%Y-%m-%d")
-    )
+    csv_text = FIXTURE.read_text().replace("2026-06-12", datetime.now(UTC).strftime("%Y-%m-%d"))
 
 
 class _FakeClient:
@@ -39,8 +37,9 @@ def test_dashboard_renders_with_synthetic_data(monkeypatch):
 
     assert not at.exception
     metrics = {m.label: m.value for m in at.metric}
-    assert metrics["Satellite detections"] == "12"  # 4 rows x 3 satellites
     assert metrics["Fire events"] == "4"
+    # 4 fixture rows x 3 satellites
+    assert any("from 12 satellite detections" in c.value for c in at.caption)
 
 
 def test_dashboard_explains_missing_key(monkeypatch):
