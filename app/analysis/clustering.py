@@ -87,8 +87,9 @@ def cluster_detections(
     df["_first_seen"] = keys
     order = (
         df.drop_duplicates(["_spatial_cluster", "_segment"])
-        .sort_values(["_first_seen", "latitude", "longitude"], kind="stable")
-        [["_spatial_cluster", "_segment"]]
+        .sort_values(["_first_seen", "latitude", "longitude"], kind="stable")[
+            ["_spatial_cluster", "_segment"]
+        ]
         .reset_index(drop=True)
     )
     order["event_id"] = np.arange(len(order), dtype="int64")
@@ -113,33 +114,42 @@ def summarize_events(clustered: pd.DataFrame) -> pd.DataFrame:
             df[col] = np.nan
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["_pixel_km2"] = df["scan_km"] * df["track_km"]
+    # Circular mean of longitude (so a fire straddling the 180° line isn't placed at 0°),
+    # computed for all events at once from per-row sin/cos: no Python loop per event.
+    lon_rad = np.radians(df["longitude"].astype(float))
+    df["_sin_lon"] = np.sin(lon_rad)
+    df["_cos_lon"] = np.cos(lon_rad)
+    df["_lat"] = df["latitude"].astype(float)
 
     grouped = df.groupby("event_id")
-    summary = pd.DataFrame(
-        {
-            "n_detections": grouped.size(),
-            "centroid_lat": grouped["latitude"].apply(lambda s: s.astype(float).mean()),
-            "centroid_lon": grouped["longitude"].apply(_mean_longitude),
-            "first_seen": grouped["acquired_at"].min(),
-            "last_seen": grouped["acquired_at"].max(),
-            # min_count=1 keeps "all values missing" as NaN instead of 0.
-            "total_frp_mw": grouped["frp_mw"].sum(min_count=1),
-            "max_frp_mw": grouped["frp_mw"].max(),
-            "pixel_footprint_km2": grouped["_pixel_km2"].sum(min_count=1),
-        }
-    ).reset_index()
+    summary = grouped.agg(
+        n_detections=("_lat", "size"),
+        centroid_lat=("_lat", "mean"),
+        _sin=("_sin_lon", "mean"),
+        _cos=("_cos_lon", "mean"),
+        first_seen=("acquired_at", "min"),
+        last_seen=("acquired_at", "max"),
+        max_frp_mw=("frp_mw", "max"),
+    )
+    # min_count=1 keeps "all values missing" as NaN instead of 0.
+    summary["total_frp_mw"] = grouped["frp_mw"].sum(min_count=1)
+    summary["pixel_footprint_km2"] = grouped["_pixel_km2"].sum(min_count=1)
+    summary["centroid_lon"] = np.degrees(np.arctan2(summary["_sin"], summary["_cos"]))
+    summary = summary.drop(columns=["_sin", "_cos"]).reset_index()
     summary["duration_hours"] = (
         summary["last_seen"] - summary["first_seen"]
     ).dt.total_seconds() / 3600.0
 
     columns = [
-        "event_id", "n_detections", "centroid_lat", "centroid_lon", "first_seen",
-        "last_seen", "duration_hours", "total_frp_mw", "max_frp_mw", "pixel_footprint_km2",
+        "event_id",
+        "n_detections",
+        "centroid_lat",
+        "centroid_lon",
+        "first_seen",
+        "last_seen",
+        "duration_hours",
+        "total_frp_mw",
+        "max_frp_mw",
+        "pixel_footprint_km2",
     ]
     return summary[columns].sort_values("event_id").reset_index(drop=True)
-
-
-def _mean_longitude(lon: pd.Series) -> float:
-    """Circular mean, so a fire straddling the 180° line isn't placed at 0°."""
-    rad = np.radians(lon.astype(float).to_numpy())
-    return float(np.degrees(np.arctan2(np.sin(rad).mean(), np.cos(rad).mean())))

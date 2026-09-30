@@ -6,6 +6,11 @@ Needs NASA_FIRMS_MAP_KEY in .env, in the environment, or in Streamlit secrets.
 Flow: fetch live NASA FIRMS data -> validate -> filter (region / near a point)
       -> group pixels into fire events (DBSCAN) -> map or globe, ranking, trends.
 No database is needed; the data is fetched live and cached for 3 hours.
+
+Performance notes: the heavy work (download, filtering, clustering) is cached per
+view settings, so clicks and scrolling only redraw the page. The map draws the
+strongest fires only (MAX_MAP_EVENTS); every event stays in the numbers, table
+and downloads.
 """
 
 from __future__ import annotations
@@ -37,10 +42,11 @@ from app.ingestion.parser import parse_csv
 from app.ingestion.products import SUPPORTED_PRODUCTS, get_product
 from app.ingestion.validation import validate_records
 
-MAX_MAP_EVENTS = 10_000
+MAX_MAP_EVENTS = 2_500
 KEEP_COLUMNS = ["latitude", "longitude", "acquired_at", "frp_mw", "scan_km", "track_km"]
 WINDOW_LABELS = {"24h": "Last 24 h", "48h": "Last 48 h", "72h": "Last 72 h"}
 VIEW_LABELS = {"map": "Flat map", "globe": "3D globe"}
+CACHE_TTL = 3 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -106,9 +112,10 @@ st.markdown(
       .ws-title {{font-size:2.5rem; font-weight:700; line-height:1.1; margin:.35rem 0 .35rem;}}
       .ws-sub {{color:{T.ink_2}; font-size:1.02rem; max-width:780px; margin-bottom:1.1rem;}}
       .ws-section {{font-size:1.05rem; font-weight:600; margin:1.4rem 0 .15rem;}}
+      .ws-panel-title {{font-size:1.1rem; font-weight:650; line-height:1.3; margin-bottom:.15rem;}}
       .ws-note {{color:{T.muted}; font-size:.84rem;}}
-      .ws-kv {{color:{T.muted}; font-size:.78rem; text-transform:uppercase; letter-spacing:.05em;}}
-      .ws-v {{font-size:1.05rem; margin-bottom:.55rem;}}
+      .ws-kv {{color:{T.muted}; font-size:.74rem; text-transform:uppercase; letter-spacing:.05em;}}
+      .ws-v {{font-size:1.02rem; margin-bottom:.6rem;}}
       [data-testid="stMetricValue"] {{font-size:1.9rem;}}
       [data-testid="stMetricLabel"] p {{color:{T.ink_2}; font-size:.84rem;}}
     </style>
@@ -135,9 +142,14 @@ def get_map_key() -> str:
     return "" if key == "your_map_key_here" else key
 
 
-@st.cache_data(ttl=3 * 60 * 60, show_spinner="Fetching live NASA satellite data...")
-def load_world_detections(days: int) -> pd.DataFrame:
-    """Validated VIIRS detections for the whole world from the last ``days`` x 24 hours."""
+@st.cache_resource(ttl=CACHE_TTL, show_spinner="Fetching live NASA satellite data...")
+def load_world_detections(days: int) -> tuple[pd.DataFrame, str]:
+    """(detections, fetched_at): validated VIIRS detections, whole world, last ``days`` x 24 h.
+
+    Shared between visitors and reruns (never modified), so it is not copied on each rerun.
+    ``fetched_at`` keys the per-view cache, so views refresh exactly when the data does.
+    """
+    fetched_at = pd.Timestamp.now(tz="UTC").isoformat()
     client = FirmsClient(get_map_key())
     frames = []
     for product in SUPPORTED_PRODUCTS:
@@ -147,39 +159,76 @@ def load_world_detections(days: int) -> pd.DataFrame:
         if outcome.accepted:
             frames.append(pd.DataFrame(outcome.accepted))
     if not frames:
-        return pd.DataFrame(columns=KEEP_COLUMNS)
+        return pd.DataFrame(columns=KEEP_COLUMNS), fetched_at
     df = pd.concat(frames, ignore_index=True)
     df["acquired_at"] = pd.to_datetime(
         df["acq_date"].astype(str) + " " + df["acq_time_utc"].astype(str), utc=True
     )
-    return keep_last_days(df[KEEP_COLUMNS], days)
+    return keep_last_days(df[KEEP_COLUMNS], days), fetched_at
 
 
-@st.cache_data(ttl=3 * 60 * 60, show_spinner="Grouping pixels into fire events...")
-def build_events(detections: pd.DataFrame, eps_km: float, max_gap_hours: float) -> pd.DataFrame:
-    clustered = cluster_detections(detections, eps_km=eps_km, max_gap_hours=max_gap_hours)
+def _filter(df: pd.DataFrame, region: str, near: tuple[float, float, int] | None):
+    if df.empty:
+        return df
+    df = df[in_region(df["latitude"], df["longitude"], region)]
+    if near is not None:
+        lat, lon, radius = near
+        df = df[haversine_km(lat, lon, df["latitude"], df["longitude"]) <= radius]
+    return df
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner="Grouping pixels into fire events...")
+def view_data(
+    days: int,
+    region: str,
+    near: tuple[float, float, int] | None,
+    eps_km: float,
+    max_gap_hours: float,
+    fetched_at: str,
+) -> dict:
+    """Everything the page needs for one set of view settings (cached, so clicks are fast).
+
+    Keyed on small arguments only. Windows are measured back from ``fetched_at``, the
+    moment the NASA data was downloaded, so the result is stable until the next download.
+    """
+    raw, _ = load_world_detections(2 * days)  # this window + the one before, for trends
+    current, previous = split_periods(raw, days, pd.Timestamp(fetched_at))
+    current, previous = _filter(current, region, near), _filter(previous, region, near)
+    result = {
+        "n_detections": len(current),
+        "power_now": float(current["frp_mw"].sum()),
+        "power_before": float(previous["frp_mw"].sum()) if len(previous) else float("nan"),
+        "latest_pass": current["acquired_at"].max() if len(current) else None,
+        "bins_now": _bins(current),
+        "bins_before": _bins(previous),
+        "events": None,
+    }
+    if current.empty:
+        return result
+    clustered = cluster_detections(current, eps_km=eps_km, max_gap_hours=max_gap_hours)
     events = summarize_events(clustered)
     events["region"] = label_regions(events["centroid_lat"], events["centroid_lon"])
     events["location"] = [
         format_latlon(lat, lon)
         for lat, lon in zip(events["centroid_lat"], events["centroid_lon"], strict=True)
     ]
-    return events
+    if near is not None:
+        events["distance_km"] = haversine_km(
+            near[0], near[1], events["centroid_lat"], events["centroid_lon"]
+        )
+    result["events"] = events
+    return result
+
+
+def _bins(df: pd.DataFrame) -> pd.Series:
+    if df.empty:
+        return pd.Series(dtype="int64")
+    return df.set_index("acquired_at").resample("3h").size()
 
 
 def pixels(n) -> str:
     n = int(n)
     return f"{n:,} pixel" if n == 1 else f"{n:,} pixels"
-
-
-def apply_filters(df: pd.DataFrame, state: ViewState) -> pd.DataFrame:
-    if df.empty:
-        return df
-    df = df[in_region(df["latitude"], df["longitude"], state.region)]
-    if state.near_active:
-        dist = haversine_km(state.near_lat, state.near_lon, df["latitude"], df["longitude"])
-        df = df[dist <= state.radius_km]
-    return df
 
 
 # ---------- State: URL <-> widgets ----------
@@ -217,14 +266,14 @@ cols = st.columns([1.25, 1.55, 1.2, 1.0, 0.9, 0.8], vertical_alignment="bottom")
 cols[0].selectbox("Region", list(REGIONS), key="region")
 cols[1].segmented_control("Time window", list(WINDOW_LABELS.values()), key="window")
 cols[2].segmented_control("View", list(VIEW_LABELS.values()), key="view")
-with cols[3].popover("📍 Near a place", use_container_width=True):
+with cols[3].popover("📍 Near a place", width="stretch"):
     st.toggle("Only show fires near a point", key="near_on")
     a, b = st.columns(2)
     a.number_input("Latitude", -90.0, 90.0, step=0.1, format="%.4f", key="near_lat")
     b.number_input("Longitude", -180.0, 180.0, step=0.1, format="%.4f", key="near_lon")
     st.select_slider("Radius (km)", options=list(RADII_KM), key="radius")
     st.caption("Tip: in Google Maps, right-click a place to copy its coordinates.")
-with cols[4].popover("⚙ Options", use_container_width=True):
+with cols[4].popover("⚙ Options", width="stretch"):
     min_pixels = st.select_slider(
         "Minimum fire size (pixels)", options=[1, 2, 5, 10, 20, 50], value=1
     )
@@ -243,7 +292,7 @@ state = ViewState(
     radius_km=st.session_state.radius,
 )
 st.query_params.from_dict(to_query(state))
-with cols[5].popover("🔗 Share", use_container_width=True):
+with cols[5].popover("🔗 Share", width="stretch"):
     st.caption("Link to exactly this view:")
     st.code(
         share_url(st.context.url or "https://wildfire-sentinel.streamlit.app/", state),
@@ -252,38 +301,31 @@ with cols[5].popover("🔗 Share", use_container_width=True):
 
 days = WINDOWS[state.window]
 period = f"{days * 24} h"
+near = (state.near_lat, state.near_lon, state.radius_km) if state.near_active else None
 
-# ---------- Data for this view ----------
+# ---------- Data for this view (cached) ----------
 try:
-    raw = load_world_detections(2 * days)  # current window + the one before, for trends
+    _, fetched_at = load_world_detections(2 * days)
+    data = view_data(days, state.region, near, float(eps_km), float(max_gap_hours), fetched_at)
 except FirmsError as exc:
     st.error(f"Could not fetch data from NASA FIRMS. Try again in a few minutes.\n\n{exc}")
     st.stop()
 
-now = pd.Timestamp.now(tz="UTC")
-current, previous = split_periods(raw, days, now) if not raw.empty else (raw, raw)
-current, previous = apply_filters(current, state), apply_filters(previous, state)
-
-if current.empty:
-    where = f"within {state.radius_km} km of that point" if state.near_active else "here"
+if data["events"] is None:
+    where = f"within {state.radius_km} km of that point" if near else "here"
     st.info(f"No fire detections {where} in the last {period}. Try a wider area or window.")
     st.stop()
 
-events = build_events(current, eps_km, float(max_gap_hours))
-if state.near_active:
-    events["distance_km"] = haversine_km(
-        state.near_lat, state.near_lon, events["centroid_lat"], events["centroid_lon"]
-    )
+events = data["events"]
 shown = events[events["n_detections"] >= min_pixels]
 if shown.empty:
     st.info("No fire events this large here. Lower the minimum size in ⚙ Options.")
     st.stop()
 ranked = shown.dropna(subset=["total_frp_mw"])
-
-# ---------- Selection (read before drawing, so the map can highlight it) ----------
 by_id = shown.set_index("event_id")
 
 
+# ---------- Selection (read before drawing, so the map can highlight it) ----------
 def selected_ids_from_map() -> list[int]:
     sel = st.session_state.get("fire_map")
     points = sel.selection.points if sel and sel.selection else []
@@ -306,18 +348,16 @@ focus_id = map_ids[0] if len(map_ids) == 1 else selected_id_from_table()
 # ---------- Headline numbers ----------
 largest = shown.loc[shown["n_detections"].idxmax()]
 strongest = ranked.loc[ranked["total_frp_mw"].idxmax()] if len(ranked) else None
-power_now = float(current["frp_mw"].sum())
-power_before = float(previous["frp_mw"].sum()) if not previous.empty else float("nan")
 
 k1, k2, k3, k4 = st.columns(4)
 with k1.container(border=True, height=172):
     st.metric("Fire events", f"{len(shown):,}")
-    st.caption(f"from {len(current):,} satellite detections")
+    st.caption(f"from {data['n_detections']:,} satellite detections")
 with k2.container(border=True, height=172):
     st.metric(
         "Total fire power",
-        f"{power_now:,.0f} MW",
-        delta=format_delta(pct_change(power_now, power_before), period),
+        f"{data['power_now']:,.0f} MW",
+        delta=format_delta(pct_change(data["power_now"], data["power_before"]), period),
         delta_color="inverse",
     )
     st.caption("all fires combined")
@@ -329,7 +369,7 @@ with k3.container(border=True, height=172):
         st.metric("Most intense fire", f"{strongest['total_frp_mw']:,.0f} MW")
         st.caption(f"{strongest['location']} · {pixels(strongest['n_detections'])}")
 with k4.container(border=True, height=172):
-    if state.near_active:
+    if near:
         nearest = shown.loc[shown["distance_km"].idxmin()]
         st.metric("Nearest fire", f"{nearest['distance_km']:,.0f} km")
         st.caption(f"{nearest['location']} · {len(shown):,} fires within {state.radius_km} km")
@@ -347,8 +387,8 @@ def map_center() -> tuple[float, float]:
     if focus_id is not None:
         row = by_id.loc[focus_id]
         return float(row["centroid_lat"]), float(row["centroid_lon"])
-    if state.near_active:
-        return state.near_lat, state.near_lon
+    if near:
+        return near[0], near[1]
     bbox = REGIONS[state.region]
     if bbox is not None:
         return (bbox[1] + bbox[3]) / 2, (bbox[0] + bbox[2]) / 2
@@ -356,8 +396,11 @@ def map_center() -> tuple[float, float]:
 
 
 def build_map(plot: pd.DataFrame) -> go.Figure:
-    color_max = max(3.0, float(np.ceil(plot["log_frp"].max()))) if len(plot) else 3.0
-    ticks = list(range(int(color_max) + 1))
+    # Stretch the colour scale over the fires actually drawn (whole powers of ten).
+    color_min = float(np.floor(plot["log_frp"].min())) if len(plot) else 0.0
+    color_max = float(np.ceil(plot["log_frp"].max())) if len(plot) else 3.0
+    color_max = max(color_max, color_min + 1)
+    ticks = list(range(int(color_min), int(color_max) + 1))
     custom = plot[
         [
             "event_id",
@@ -379,10 +422,10 @@ def build_map(plot: pd.DataFrame) -> go.Figure:
                 "size": plot["marker_size"],
                 "color": plot["log_frp"],
                 "colorscale": list(T.fire_ramp),
-                "cmin": 0,
+                "cmin": color_min,
                 "cmax": color_max,
-                "opacity": 0.88,
-                "line": {"width": 0.5, "color": T.surface},
+                "opacity": 0.9,
+                "line": {"width": 0.6, "color": T.surface},
                 "colorbar": {
                     "title": {"text": "Fire power (MW)", "side": "top"},
                     "orientation": "h",
@@ -390,42 +433,42 @@ def build_map(plot: pd.DataFrame) -> go.Figure:
                     "xanchor": "left",
                     "y": -0.02,
                     "yanchor": "top",
-                    "len": 0.32,
+                    "len": 0.4,
                     "thickness": 8,
                     "outlinewidth": 0,
                     "tickvals": ticks,
                     "ticktext": [f"{10**t:,}" for t in ticks],
-                    "tickfont": {"color": T.muted},
+                    "tickfont": {"color": T.muted, "size": 11},
                 },
             },
+            # Keep every fire fully visible after a click (Plotly fades unselected points).
+            selected={"marker": {"opacity": 1}},
+            unselected={"marker": {"opacity": 0.9}},
             hovertemplate=(
                 "<b>%{customdata[1]}</b> · %{customdata[2]}<br>"
                 "Fire power: %{customdata[3]:,.0f} MW<br>"
                 "Satellite pixels: %{customdata[4]:,}<br>"
-                "Burning: %{customdata[5]:.1f} h<br>"
-                "First seen: %{customdata[6]}<br><i>Click for details</i><extra></extra>"
+                "Burning: %{customdata[5]:.1f} h<extra></extra>"
             ),
             name="Fires",
         )
     )
-    if state.near_active:
-        c_lat, c_lon = circle_points(state.near_lat, state.near_lon, state.radius_km)
+    if near:
+        c_lat, c_lon = circle_points(near[0], near[1], near[2])
         fig.add_trace(
             go.Scattergeo(
                 lat=c_lat,
                 lon=c_lon,
                 mode="lines",
                 hoverinfo="skip",
-                name="Search area",
                 line={"color": T.ink_2, "width": 1.5, "dash": "dot"},
             )
         )
         fig.add_trace(
             go.Scattergeo(
-                lat=[state.near_lat],
-                lon=[state.near_lon],
+                lat=[near[0]],
+                lon=[near[1]],
                 mode="markers",
-                name="Your point",
                 marker={"size": 9, "symbol": "x", "color": T.ink},
                 hovertemplate="Your point<extra></extra>",
             )
@@ -438,13 +481,16 @@ def build_map(plot: pd.DataFrame) -> go.Figure:
                 lon=[row["centroid_lon"]],
                 mode="markers",
                 hoverinfo="skip",
-                name="Selected",
-                marker={"size": 26, "color": "rgba(0,0,0,0)", "line": {"width": 2, "color": T.ink}},
+                marker={
+                    "size": 24,
+                    "color": "rgba(0,0,0,0)",
+                    "line": {"width": 2.5, "color": T.ink},
+                },
             )
         )
     lat0, lon0 = map_center()
     globe = state.view == "globe"
-    zoom_in = not globe and (state.region != "World" or state.near_active)
+    zoom_in = not globe and (state.region != "World" or near is not None)
     fig.update_geos(
         projection_type="orthographic" if globe else "natural earth",
         bgcolor="rgba(0,0,0,0)",
@@ -467,129 +513,152 @@ def build_map(plot: pd.DataFrame) -> go.Figure:
     elif not zoom_in:
         fig.update_geos(lataxis_range=[-58, 84])
     fig.update_layout(
-        height=620 if globe else 560,
-        margin={"l": 0, "r": 0, "t": 8, "b": 0},
+        height=540,
+        margin={"l": 0, "r": 0, "t": 4, "b": 0},
         paper_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
         dragmode="pan",  # click = fire details; box/lasso select lives in the toolbar
         font={"color": T.ink_2},
-        hoverlabel={"bgcolor": T.surface, "bordercolor": T.baseline, "font": {"color": T.ink}},
+        hoverlabel={
+            "bgcolor": T.surface,
+            "bordercolor": T.baseline,
+            "font": {"color": T.ink, "size": 13},
+        },
     )
     return fig
 
 
-section = "Fires on the globe" if state.view == "globe" else "Where the fires are"
-st.markdown(f'<div class="ws-section">{section}</div>', unsafe_allow_html=True)
-plot = ranked.nlargest(MAX_MAP_EVENTS, "total_frp_mw").sort_values("total_frp_mw").copy()
-# Fire power spans ~1 to 20,000+ MW, so colour uses a log scale.
-plot["log_frp"] = np.log10(plot["total_frp_mw"].clip(lower=1.0))
-plot["marker_size"] = np.clip(3 + 2.2 * np.sqrt(plot["n_detections"]), 4, 22)
-plot["first_seen_utc"] = plot["first_seen"].dt.strftime("%d %b %H:%M UTC")
-
-st.plotly_chart(
-    build_map(plot),
-    key="fire_map",
-    on_select="rerun",
-    selection_mode=("points", "box", "lasso"),
-    theme=None,
-    config={"displaylogo": False, "scrollZoom": state.view != "globe"},
-)
-hidden = len(ranked) - len(plot)
-hint = (
-    "Drag to rotate the globe; click a fire for details."
-    if state.view == "globe"
-    else (
-        "Click a fire for details. To select an area, pick the box or lasso tool in the "
-        "map's top-right toolbar, then drag. Double-click the map to clear."
-    )
-)
-extra = f" The {hidden:,} weakest events are not drawn." if hidden > 0 else ""
-st.markdown(
-    '<div class="ws-note">Bubble size = satellite pixels; colour = total fire radiative power '
-    f"(log scale). {hint}{extra}</div>",
-    unsafe_allow_html=True,
-)
-
-# ---------- Selection panels ----------
-if len(map_ids) > 1:
-    sel = shown[shown["event_id"].isin(map_ids)]
-    with st.container(border=True):
-        st.markdown(
-            f'<div class="ws-section" style="margin-top:0">Your selection: {len(sel):,} fires'
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        s1, s2, s3 = st.columns(3)
-        s1.metric("Fire power", f"{sel['total_frp_mw'].sum():,.0f} MW")
-        s2.metric("Satellite pixels", f"{int(sel['n_detections'].sum()):,}")
-        s3.metric("Longest burning", f"{sel['duration_hours'].max():.1f} h")
-        d1, d2 = st.columns(2)
-        d1.download_button(
-            "Download selection (CSV)",
-            sel.drop(columns=["location"]).to_csv(index=False),
-            file_name="fire_events_selection.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-        d2.download_button(
-            "Download selection (GeoJSON)",
-            events_to_geojson(sel),
-            file_name="fire_events_selection.geojson",
-            mime="application/geo+json",
-            use_container_width=True,
-        )
-elif focus_id is not None:
-    row = by_id.loc[focus_id]
-    lat, lon = float(row["centroid_lat"]), float(row["centroid_lon"])
-    with st.container(border=True):
-        st.markdown(
-            f'<div class="ws-section" style="margin-top:0">🔥 Fire at {row["location"]}'
-            f" · {row['region']}</div>",
-            unsafe_allow_html=True,
-        )
-        facts = [
-            ("Fire power", f"{row['total_frp_mw']:,.0f} MW"),
-            ("Peak pixel", f"{row['max_frp_mw']:,.0f} MW"),
-            ("Size", pixels(row["n_detections"])),
-            ("Burning for", f"{row['duration_hours']:.1f} h"),
-            ("First seen", f"{row['first_seen']:%d %b %H:%M} UTC"),
-            ("Last seen", f"{row['last_seen']:%d %b %H:%M} UTC"),
-        ]
-        if "distance_km" in row:
-            facts.append(("From your point", f"{row['distance_km']:,.0f} km"))
-        fact_cols = st.columns(len(facts))
-        for col, (label, value) in zip(fact_cols, facts, strict=True):
+def fact_grid(facts: list[tuple[str, str]]) -> None:
+    for i in range(0, len(facts), 2):
+        left, right = st.columns(2)
+        for col, (label, value) in zip((left, right), facts[i : i + 2], strict=False):
             col.markdown(
                 f'<div class="ws-kv">{label}</div><div class="ws-v">{value}</div>',
                 unsafe_allow_html=True,
             )
-        l1, l2, l3 = st.columns([1.2, 1, 1])
-        l1.code(f"{lat:.5f}, {lon:.5f}", language=None)
-        l2.link_button(
-            "Open in Google Maps",
-            f"https://www.google.com/maps?q={lat:.5f},{lon:.5f}",
-            use_container_width=True,
-        )
-        l3.link_button(
-            "Open in NASA FIRMS",
-            f"https://firms.modaps.eosdis.nasa.gov/map/#d:24hrs;@{lon:.4f},{lat:.4f},10.0z",
-            use_container_width=True,
-        )
+
+
+def fire_panel(row: pd.Series, heading: str) -> None:
+    lat, lon = float(row["centroid_lat"]), float(row["centroid_lon"])
+    st.markdown(f'<div class="ws-kv">{heading}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="ws-panel-title">🔥 {row["location"]}</div>'
+        f'<div class="ws-note" style="margin-bottom:.8rem">{row["region"]}</div>',
+        unsafe_allow_html=True,
+    )
+    facts = [
+        ("Fire power", f"{row['total_frp_mw']:,.0f} MW"),
+        ("Peak pixel", f"{row['max_frp_mw']:,.0f} MW"),
+        ("Size", pixels(row["n_detections"])),
+        ("Burning for", f"{row['duration_hours']:.1f} h"),
+        ("First seen", f"{row['first_seen']:%d %b %H:%M} UTC"),
+        ("Last seen", f"{row['last_seen']:%d %b %H:%M} UTC"),
+    ]
+    if "distance_km" in row:
+        facts.append(("From your point", f"{row['distance_km']:,.0f} km"))
+    fact_grid(facts)
+    st.code(f"{lat:.5f}, {lon:.5f}", language=None)
+    st.link_button(
+        "Open in Google Maps",
+        f"https://www.google.com/maps?q={lat:.5f},{lon:.5f}",
+        width="stretch",
+    )
+    st.link_button(
+        "Open in NASA FIRMS",
+        f"https://firms.modaps.eosdis.nasa.gov/map/#d:24hrs;@{lon:.4f},{lat:.4f},10.0z",
+        width="stretch",
+    )
+
+
+plot = ranked.nlargest(MAX_MAP_EVENTS, "total_frp_mw").sort_values("total_frp_mw").copy()
+# Fire power spans ~1 to 20,000+ MW, so colour uses a log scale. Size grows with the log
+# of the pixel count, so large fires stand out without covering their neighbours.
+plot["log_frp"] = np.log10(plot["total_frp_mw"].clip(lower=1.0))
+plot["marker_size"] = 4 + 3 * np.log10(plot["n_detections"])
+plot["first_seen_utc"] = plot["first_seen"].dt.strftime("%d %b %H:%M UTC")
+
+map_col, panel_col = st.columns([2.3, 1], gap="medium")
+with map_col:
+    section = "Fires on the globe" if state.view == "globe" else "Where the fires are"
+    st.markdown(f'<div class="ws-section">{section}</div>', unsafe_allow_html=True)
+    st.plotly_chart(
+        build_map(plot),
+        key="fire_map",
+        on_select="rerun",
+        selection_mode=("points", "box", "lasso"),
+        theme=None,
+        config={"displaylogo": False, "scrollZoom": False},
+    )
+    drawn = (
+        f"Showing the {len(plot):,} most intense of {len(ranked):,} fires; "
+        "all of them are in the table and downloads. "
+        if len(plot) < len(ranked)
+        else ""
+    )
+    how = (
+        "Drag to rotate the globe."
+        if state.view == "globe"
+        else "Drag to pan; for an area, pick the box tool (top right of the map) and drag."
+    )
+    st.markdown(
+        f'<div class="ws-note">{drawn}Size = satellite pixels, colour = fire power (log scale). '
+        f"{how} Double-click the map to clear a selection.</div>",
+        unsafe_allow_html=True,
+    )
+
+with panel_col:
+    st.markdown('<div class="ws-section">&nbsp;</div>', unsafe_allow_html=True)
+    with st.container(border=True, height=560):
+        if len(map_ids) > 1:
+            sel = shown[shown["event_id"].isin(map_ids)]
+            st.markdown('<div class="ws-kv">Your selection</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="ws-panel-title">{len(sel):,} fires selected</div>',
+                unsafe_allow_html=True,
+            )
+            fact_grid(
+                [
+                    ("Fire power", f"{sel['total_frp_mw'].sum():,.0f} MW"),
+                    ("Satellite pixels", f"{int(sel['n_detections'].sum()):,}"),
+                    ("Strongest fire", f"{sel['total_frp_mw'].max():,.0f} MW"),
+                    ("Longest burning", f"{sel['duration_hours'].max():.1f} h"),
+                ]
+            )
+            st.download_button(
+                "Download selection (CSV)",
+                lambda sel=sel: sel.drop(columns=["location"]).to_csv(index=False),
+                file_name="fire_events_selection.csv",
+                mime="text/csv",
+                width="stretch",
+            )
+            st.download_button(
+                "Download selection (GeoJSON)",
+                lambda sel=sel: events_to_geojson(sel),
+                file_name="fire_events_selection.geojson",
+                mime="application/geo+json",
+                width="stretch",
+            )
+            st.caption("Double-click the map to clear the selection.")
+        elif focus_id is not None:
+            fire_panel(by_id.loc[focus_id], "Selected fire")
+        elif strongest is not None:
+            fire_panel(strongest, "Most intense fire right now")
+            st.caption("👆 Click any fire on the map to see its details here.")
 
 # ---------- Ranking + activity ----------
 left, right = st.columns([1.4, 1], gap="large")
 
 with left:
-    title = "Nearest fires" if state.near_active else "Most intense fires"
+    title = "Nearest fires" if near else "Most intense fires"
     st.markdown(f'<div class="ws-section">{title}</div>', unsafe_allow_html=True)
-    if state.near_active:
+    if near:
         top = shown.nsmallest(10, "distance_km").reset_index(drop=True)
     else:
         top = ranked.nlargest(10, "total_frp_mw").reset_index(drop=True)
     st.session_state["top_ids"] = [int(i) for i in top["event_id"]]
     top.insert(0, "rank", np.arange(1, len(top) + 1))
     columns = ["rank", "location", "region", "total_frp_mw", "n_detections", "duration_hours"]
-    if state.near_active:  # everything is in one area, so distance replaces region
+    if near:  # everything is in one area, so distance replaces region
         columns[columns.index("region")] = "distance_km"
     bar_max = float(top["total_frp_mw"].max()) if top["total_frp_mw"].notna().any() else 1.0
     st.dataframe(
@@ -598,7 +667,7 @@ with left:
         on_select="rerun",
         selection_mode="single-row",
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         column_config={
             "rank": st.column_config.NumberColumn("#", width="small"),
             "location": "Location",
@@ -611,33 +680,32 @@ with left:
             "duration_hours": st.column_config.NumberColumn("Burning (h)", format="%.1f"),
         },
     )
-    st.caption("Select a row to highlight that fire on the map.")
+    st.caption("Select a row to show that fire on the map and in the details panel.")
     e1, e2 = st.columns(2)
     e1.download_button(
         f"All {len(shown):,} fires (CSV)",
-        shown.drop(columns=["location"]).to_csv(index=False),
+        lambda: shown.drop(columns=["location"]).to_csv(index=False),
         file_name="fire_events.csv",
         mime="text/csv",
-        use_container_width=True,
+        width="stretch",
     )
     e2.download_button(
         f"All {len(shown):,} fires (GeoJSON)",
-        events_to_geojson(shown),
+        lambda: events_to_geojson(shown),
         file_name="fire_events.geojson",
         mime="application/geo+json",
-        use_container_width=True,
+        width="stretch",
     )
 
 with right:
     st.markdown('<div class="ws-section">Detections over time</div>', unsafe_allow_html=True)
     bar = go.Figure()
-    for part, color, label in (
-        (previous, T.baseline, f"previous {period}"),
-        (current, T.accent, f"last {period}"),
+    for bins, color, label in (
+        (data["bins_before"], T.baseline, f"previous {period}"),
+        (data["bins_now"], T.accent, f"last {period}"),
     ):
-        if part.empty:
+        if bins.empty:
             continue
-        bins = part.set_index("acquired_at").resample("3h").size()
         bar.add_trace(
             go.Bar(
                 x=bins.index,
@@ -657,7 +725,11 @@ with right:
         plot_bgcolor="rgba(0,0,0,0)",
         font={"color": T.ink_2},
         legend={"orientation": "h", "y": 1.1, "x": 0, "font": {"color": T.ink_2}},
-        hoverlabel={"bgcolor": T.surface, "bordercolor": T.baseline, "font": {"color": T.ink}},
+        hoverlabel={
+            "bgcolor": T.surface,
+            "bordercolor": T.baseline,
+            "font": {"color": T.ink, "size": 13},
+        },
     )
     bar.update_xaxes(
         showgrid=False,
@@ -702,12 +774,13 @@ Fire events are estimates from DBSCAN clustering (default: pixels within 1 km, g
     )
 
 st.divider()
-latest_pass = current["acquired_at"].max()
+latest = data["latest_pass"]
+latest_text = f"{latest:%d %b %H:%M} UTC" if latest is not None else "n/a"
 st.markdown(
     f"""
     <div class="ws-note">
-    Data: NASA FIRMS, VIIRS on NOAA-20, NOAA-21 and Suomi NPP, cached for 3 hours.
-    Latest satellite pass in view: {latest_pass:%d %b %H:%M} UTC.
+    Data: NASA FIRMS, VIIRS on NOAA-20, NOAA-21 and Suomi NPP, refreshed every 3 hours.
+    Latest satellite pass in view: {latest_text}.
     Source code: <a href="https://github.com/kirtii56/wildfire." style="color:{T.ink_2}">GitHub</a>.
     </div>
     """,
