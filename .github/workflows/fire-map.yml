@@ -33,7 +33,9 @@ jobs:
       - name: Fetch NASA data and draw the map
         env:
           NASA_FIRMS_MAP_KEY: ${{ secrets.NASA_FIRMS_MAP_KEY }}
-        run: python scripts/quick_map.py
+        # NASA's 1-day window only covers the current UTC date, which has barely
+        # started at 02:30 UTC, so fetch 2 days to always show a full day of fires.
+        run: python scripts/quick_map.py --days 2
 
       - name: Prepare the website
         run: |

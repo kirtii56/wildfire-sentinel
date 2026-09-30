@@ -5,6 +5,8 @@ validates them, and stores them in PostgreSQL. A FastAPI REST API serves the
 detections and groups hot pixels into fire events with DBSCAN (scikit-learn)
 on each request.
 
+**Live map (updated daily):** https://kirtii56.github.io/wildfire./
+
 **Stack:** Python · Pandas · NumPy · scikit-learn · PostgreSQL · FastAPI · Plotly · pytest
 
 **Status: in development.** Ingestion, validation, database, fire-event
@@ -146,8 +148,9 @@ fixtures live only under `tests/fixtures/` and are labelled there.
 
 ## Known limitations
 
-- The FIRMS client has never been run against the live NASA endpoint; it is
-  covered by mocked HTTP tests only.
+- The FIRMS client runs against the live NASA endpoint in the daily map
+  workflow; the database ingest path is covered by mocked HTTP tests and has
+  not yet been run against live data.
 - MODIS is not supported yet. The schema accommodates it; the product registry
   does not list it.
 - The live map is a static page rebuilt once a day; the API itself is not hosted yet.
