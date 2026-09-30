@@ -142,7 +142,11 @@ def get_map_key() -> str:
     return "" if key == "your_map_key_here" else key
 
 
-@st.cache_resource(ttl=CACHE_TTL, show_spinner="Fetching live NASA satellite data...")
+# Memory caps: the free host has ~1 GB, so the caches keep a bounded number of entries
+# and drop the least recently used one when full (instead of growing until a crash).
+@st.cache_resource(
+    ttl=CACHE_TTL, max_entries=3, show_spinner="Fetching live NASA satellite data..."
+)
 def load_world_detections(days: int) -> tuple[pd.DataFrame, str]:
     """(detections, fetched_at): validated VIIRS detections, whole world, last ``days`` x 24 h.
 
@@ -177,7 +181,7 @@ def _filter(df: pd.DataFrame, region: str, near: tuple[float, float, int] | None
     return df
 
 
-@st.cache_data(ttl=CACHE_TTL, show_spinner="Grouping pixels into fire events...")
+@st.cache_data(ttl=CACHE_TTL, max_entries=20, show_spinner="Grouping pixels into fire events...")
 def view_data(
     days: int,
     region: str,
