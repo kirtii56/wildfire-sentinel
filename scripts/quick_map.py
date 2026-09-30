@@ -79,8 +79,12 @@ def draw_map(events: pd.DataFrame, path: Path) -> None:
         range_color=(0, max(float(plot["max_frp_mw"].quantile(0.95)), 1.0)),
         opacity=0.85,
         hover_data={
-            "event_id": True, "n_detections": True, "max_frp_mw": ":.1f",
-            "total_frp_mw": ":.1f", "first_seen": True, "centroid_lat": ":.3f",
+            "event_id": True,
+            "n_detections": True,
+            "max_frp_mw": ":.1f",
+            "total_frp_mw": ":.1f",
+            "first_seen": True,
+            "centroid_lat": ":.3f",
             "centroid_lon": ":.3f",
         },
         labels={"max_frp_mw": "Max FRP (MW)", "n_detections": "Pixels"},
@@ -99,7 +103,11 @@ def draw_map(events: pd.DataFrame, path: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fetch NASA fire data and draw a world map.")
     parser.add_argument(
-        "--days", type=int, default=1, choices=range(1, 10), metavar="1-9",
+        "--days",
+        type=int,
+        default=1,
+        choices=range(1, 5),
+        metavar="1-4",
         help="rolling window in 24-hour days (default: last 24 hours)",
     )
     parser.add_argument(

@@ -10,14 +10,25 @@ from __future__ import annotations
 
 import pandas as pd
 
-FIRMS_MAX_DAY_RANGE = 10
+# NASA FIRMS rejects area requests for more than 5 days (HTTP 400).
+FIRMS_MAX_DAY_RANGE = 5
+MAX_ROLLING_DAYS = FIRMS_MAX_DAY_RANGE - 1  # one extra calendar day is always requested
 
 
 def firms_day_range(days: int) -> int:
     """The FIRMS day_range to request so that a rolling ``days`` window is fully covered."""
-    if not 1 <= days < FIRMS_MAX_DAY_RANGE:
-        raise ValueError(f"days must be between 1 and {FIRMS_MAX_DAY_RANGE - 1}")
+    if not 1 <= days <= MAX_ROLLING_DAYS:
+        raise ValueError(f"days must be between 1 and {MAX_ROLLING_DAYS}")
     return days + 1
+
+
+def trend_fetch_days(days: int) -> int:
+    """Days to download for a ``days`` window plus the window before it (for trends).
+
+    If both windows don't fit in one FIRMS request, only the window itself is fetched
+    and the trend comparison is skipped.
+    """
+    return 2 * days if 2 * days <= MAX_ROLLING_DAYS else days
 
 
 def keep_last_days(

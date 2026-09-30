@@ -33,6 +33,7 @@ def test_dashboard_renders_with_synthetic_data(monkeypatch):
     import streamlit as st
 
     st.cache_data.clear()
+    st.cache_resource.clear()
     at = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=60).run()
 
     assert not at.exception
@@ -47,7 +48,35 @@ def test_dashboard_explains_missing_key(monkeypatch):
     import streamlit as st
 
     st.cache_data.clear()
+    st.cache_resource.clear()
     at = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=60).run()
 
     assert not at.exception
     assert any("NASA_FIRMS_MAP_KEY is missing" in e.value for e in at.error)
+
+
+@pytest.mark.parametrize("window", ["24h", "48h", "72h"])
+def test_every_window_stays_within_nasa_day_limit(monkeypatch, window):
+    requested = []
+
+    class _RecordingClient(_FakeClient):
+        def fetch(self, product, area, day_range):
+            requested.append(day_range)
+            if day_range > 5:  # what NASA does: HTTP 400
+                raise firms_client.FirmsError(f"FIRMS returned HTTP 400 ({day_range} days)")
+            return _FakeResult()
+
+    monkeypatch.setattr(firms_client, "FirmsClient", _RecordingClient)
+    monkeypatch.setenv("NASA_FIRMS_MAP_KEY", "test-key")
+    import streamlit as st
+
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    at = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=60)
+    at.query_params["window"] = window
+    at.run()
+
+    assert not at.exception
+    assert not any("Could not fetch" in e.value for e in at.error)
+    assert requested and max(requested) <= 5
+    assert {m.label: m.value for m in at.metric}["Fire events"] == "4"

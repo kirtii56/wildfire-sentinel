@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from app.analysis.time_window import firms_day_range, keep_last_days
+from app.analysis.time_window import firms_day_range, keep_last_days, trend_fetch_days
 
 NOW = pd.Timestamp("2026-09-30T02:30:00Z")
 
@@ -19,7 +19,7 @@ def test_requests_one_extra_calendar_day():
     assert firms_day_range(3) == 4
 
 
-@pytest.mark.parametrize("days", [0, 10])
+@pytest.mark.parametrize("days", [0, 5])
 def test_rejects_out_of_range(days):
     with pytest.raises(ValueError):
         firms_day_range(days)
@@ -37,3 +37,15 @@ def test_longer_window():
 
 def test_empty_input():
     assert keep_last_days(pd.DataFrame(columns=["acquired_at"]), days=1, now=NOW).empty
+
+
+def test_requests_never_exceed_nasa_limit():
+    # NASA FIRMS rejects more than 5 days per request (a 7-day request returned HTTP 400).
+    for days in (1, 2, 3):
+        assert firms_day_range(trend_fetch_days(days)) <= 5
+
+
+def test_trend_window_only_when_it_fits():
+    assert trend_fetch_days(1) == 2  # 24 h + previous 24 h
+    assert trend_fetch_days(2) == 4  # 48 h + previous 48 h
+    assert trend_fetch_days(3) == 3  # 72 h only: previous 72 h would need 7 days

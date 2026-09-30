@@ -25,7 +25,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from app.analysis.clustering import cluster_detections, summarize_events
-from app.analysis.time_window import firms_day_range, keep_last_days
+from app.analysis.time_window import firms_day_range, keep_last_days, trend_fetch_days
 from app.dashboard.export import events_to_geojson
 from app.dashboard.geo import (
     REGIONS,
@@ -191,7 +191,8 @@ def view_data(
     Keyed on small arguments only. Windows are measured back from ``fetched_at``, the
     moment the NASA data was downloaded, so the result is stable until the next download.
     """
-    raw, _ = load_world_detections(2 * days)  # this window + the one before, for trends
+    # This window + the one before (for trends), when NASA's 5-day limit allows it.
+    raw, _ = load_world_detections(trend_fetch_days(days))
     current, previous = split_periods(raw, days, pd.Timestamp(fetched_at))
     current, previous = _filter(current, region, near), _filter(previous, region, near)
     result = {
@@ -305,7 +306,7 @@ near = (state.near_lat, state.near_lon, state.radius_km) if state.near_active el
 
 # ---------- Data for this view (cached) ----------
 try:
-    _, fetched_at = load_world_detections(2 * days)
+    _, fetched_at = load_world_detections(trend_fetch_days(days))
     data = view_data(days, state.region, near, float(eps_km), float(max_gap_hours), fetched_at)
 except FirmsError as exc:
     st.error(f"Could not fetch data from NASA FIRMS. Try again in a few minutes.\n\n{exc}")
@@ -360,7 +361,11 @@ with k2.container(border=True, height=172):
         delta=format_delta(pct_change(data["power_now"], data["power_before"]), period),
         delta_color="inverse",
     )
-    st.caption("all fires combined")
+    st.caption(
+        "all fires combined"
+        if trend_fetch_days(days) == 2 * days
+        else f"no trend for {period}: NASA serves at most 5 days at once"
+    )
 with k3.container(border=True, height=172):
     if strongest is None:
         st.metric("Most intense fire", "n/a")

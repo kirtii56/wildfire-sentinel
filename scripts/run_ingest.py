@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="'world' or 'lon_min,lat_min,lon_max,lat_max'. Defaults to FIRMS_AREA.",
     )
     parser.add_argument(
-        "--day-range", type=int, help="Days to fetch, 1-10. Defaults to FIRMS_DAY_RANGE."
+        "--day-range", type=int, help="Days to fetch, 1-5. Defaults to FIRMS_DAY_RANGE."
     )
     parser.add_argument("--date", help="Optional FIRMS start date, YYYY-MM-DD.")
     parser.add_argument("--json", action="store_true", help="Print the run summaries as JSON.")
