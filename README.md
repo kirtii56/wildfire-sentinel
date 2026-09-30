@@ -5,7 +5,9 @@ validates them, and stores them in PostgreSQL. A FastAPI REST API serves the
 detections and groups hot pixels into fire events with DBSCAN (scikit-learn)
 on each request.
 
-**Live map (updated daily):** https://kirtii56.github.io/wildfire./
+**Live dashboard:** https://wildfire-sentinel.streamlit.app/
+
+**Daily static map:** https://kirtii56.github.io/wildfire./
 
 **Stack:** Python · Pandas · NumPy · scikit-learn · PostgreSQL · FastAPI · Streamlit · Plotly · pytest
 
@@ -31,6 +33,9 @@ NASA FIRMS API ──> fetch ──> parse CSV ──> validate ──> PostgreS
 5. **Serve** — `app/api/main.py` exposes the data as JSON endpoints.
 
 ## Dashboard (Streamlit)
+
+Live at https://wildfire-sentinel.streamlit.app/ (hosted on Streamlit Community Cloud;
+it may take ~30 seconds to wake up if nobody has visited recently).
 
 `streamlit_app.py` is an interactive dashboard over live NASA data: filter by
 region and time window (last 24, 48 or 72 hours), see headline numbers, a world
