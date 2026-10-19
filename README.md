@@ -119,7 +119,7 @@ the FIRMS daily quota, so start with a small bounding box while testing.
 - `streamlit_app.py` — interactive dashboard (live NASA data, no database).
 - `app/dashboard/` — dashboard helpers: distances, regions, trends, GeoJSON export, share links.
 - `scripts/` — command-line entry points (ingest, migrate, cluster, quick map).
-- `tests/` — 95 tests (unit + database). No test contacts NASA.
+- `tests/` — 100 tests (67 unit + 33 database). No test contacts NASA.
 
 ## Data source and semantics
 
@@ -163,8 +163,7 @@ FIRMS gives one row per hot pixel per satellite pass, so row counts over-count f
    new event.
 
 Both defaults are tunable assumptions. Events are estimates, not official fire perimeters;
-`pixel_footprint_km2` is summed pixel area, not burned area. A world-scale day
-(~75k synthetic detections) is loaded, clustered and returned by `/fires` in about 2 seconds.
+`pixel_footprint_km2` is summed pixel area, not burned area.
 
 ```bash
 python scripts/cluster_fires.py --days 1 --csv events.csv
@@ -173,8 +172,8 @@ python scripts/cluster_fires.py --days 1 --csv events.csv
 ## Tests
 
 ```bash
-python -m pytest                                  # unit tests only
-TEST_DATABASE_URL=postgresql://... python -m pytest   # all 95, needs a test database
+python -m pytest                                  # 67 unit tests; 33 database tests are skipped
+TEST_DATABASE_URL=postgresql://... python -m pytest   # all 100, needs a test database
 ```
 
 Database tests skip cleanly when `TEST_DATABASE_URL` is unset. Synthetic
